@@ -4,8 +4,8 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 using HarmonicShallowWater2D
 
 cfg = ModelConfig(
-    Nx = 300,
-    Ny = 100,
+    Nx = 90,
+    Ny = 30,
     Lx = 3e3,
     Ly = 1e3,
     H = 3.0,
@@ -25,7 +25,7 @@ prec = PreconditionerOptions(
     reuse_preconditioner = false,
     amg_max_levels = 10,
     amg_max_coarse = 16,
-    amg_jacobi_ω = 0.8,
+    amg_jacobi_ω = 1.0,
     amg_pre_iters = 2,
     amg_post_iters = 2,
     amg_cycles_per_apply = 1,
