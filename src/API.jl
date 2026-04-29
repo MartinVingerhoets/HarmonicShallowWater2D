@@ -172,9 +172,6 @@ function solve_problem(
 
     prob = nonlinear_problem(params, y0)
 
-    params.timing.enabled = cfg.residual_timing_enabled
-    reset!(params.timing)
-
     builder = make_preconditioner_builder(params, preconditioner_options)
     gmres_trace = GMRESNewtonTrace(Float64)
     gmres_callback = make_gmres_newton_callback(gmres_trace)
