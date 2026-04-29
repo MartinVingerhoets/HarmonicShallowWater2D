@@ -366,6 +366,30 @@ function weighted_jacobi_scalar!(x::AbstractVector{T}, A::SparseMatrixCSC{T,Int}
     return x
 end
 
+function weighted_gauss_seidel_scalar!(x::AbstractVector{T}, A::SparseMatrixCSC{T,Int}, b::AbstractVector{T}, Dinv::AbstractVector{T}, ω::T, niters::Int, tmp::AbstractVector{T}) where {T}
+    n = length(x)
+    rows = rowvals(A)
+    vals = nonzeros(A)
+
+    for _ in 1:niters
+        mul!(tmp, A, x)
+
+        @inbounds for i in 1:n
+            δ = ω * Dinv[i] * (b[i] - tmp[i])
+            x[i] += δ
+
+            if δ != zero(T)
+                for ptr in nzrange(A, i)
+                    row = rows[ptr]
+                    tmp[row] += vals[ptr] * δ
+                end
+            end
+        end
+    end
+
+    return x
+end
+
 function scalar_vcycle!(x::AbstractVector{T}, hier::ScalarAMGHierarchy{T}, lvl::Int, b::AbstractVector{T}, ws::ScalarAMGWorkspace{T}) where {T}
     if lvl == length(hier.A_levels)
         ldiv!(x, hier.coarse_factor, b)
@@ -454,6 +478,28 @@ function weighted_jacobi!(x::AbstractVector{T}, A::SparseMatrixCSC{T,Int}, b::Ab
             x[i] += ω * Dinv[i] * (b[i] - tmp[i])
         end
     end
+    return x
+end
+
+function weighted_gauss_seidel!(x::AbstractVector{T}, A::SparseMatrixCSC{T,Int}, b::AbstractVector{T}, Dinv::AbstractVector{T}, ω::T, niters::Int, tmp::AbstractVector{T}) where {T}
+    n = length(x)
+
+    for _ in 1:niters
+        mul!(tmp, A, x)
+
+        @inbounds for i in 1:n
+            δ = ω * Dinv[i] * (b[i] - tmp[i])
+            x[i] += δ
+
+            if δ != zero(T)
+                for ptr in nzrange(A, i)
+                    row = rowvals(A)[ptr]
+                    tmp[row] += nonzeros(A)[ptr] * δ
+                end
+            end
+        end
+    end
+
     return x
 end
 
