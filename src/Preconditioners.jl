@@ -188,6 +188,16 @@ struct ScalarAMGHierarchy{T,LF}
     workspaces::Vector{ScalarAMGWorkspace{T}}
 end
 
+struct ShiftedLUSolver{T,LF}
+    H::SparseMatrixCSC{T,Int}
+    factor::LF
+end
+
+struct ScalarLUSolver{T,LF}
+    A::SparseMatrixCSC{T,Int}
+    factor::LF
+end
+
 struct SinCosHelmholtzHarmonicBlock{T,HF}
     m::Int
     α::T
@@ -221,6 +231,7 @@ Base.size(P::PartialHelmholtzSinCosPrec) = (P.n, P.n)
 
 Base.@kwdef mutable struct PartialHelmholtzSinCosBuilder
     p::Params2DHarm
+    reduced_solver::Symbol = :amg
     constant_D0_in_helmholtz::Bool = true
     constant_D0_value::Union{Nothing,Float64} = nothing
     C_prec::Float64 = 1.0
@@ -240,12 +251,24 @@ Base.@kwdef mutable struct PartialHelmholtzSinCosBuilder
     last_effective_drag::Float64 = NaN
 end
 
+function validate_reduced_solver(solver::Symbol)
+    solver in (:amg, :lu) || error("Unsupported reduced_solver = $(repr(solver)). Use :amg or :lu.")
+    return solver
+end
+
+reduced_solver_label(::Val{:amg}) = "AMG"
+reduced_solver_label(::Val{:lu}) = "LU"
+reduced_solver_label(solver::Symbol) = reduced_solver_label(Val(validate_reduced_solver(solver)))
+
 @inline function _prec_idx(P::PartialHelmholtzSinCosPrec, m::Int, field::Int, face::Int)
     return (m - 1) * P.harm_block + (field - 1) * P.nface + face
 end
 
-function build_real_amg_transfer_cache(ops::HelmholtzGridOps{T}, builder::PartialHelmholtzSinCosBuilder) where {T}
-    A_real = sparse(-(ops.Dx * ops.Gx + ops.Dy * ops.Gy))
+function build_real_helmholtz_matrix(ops::HelmholtzGridOps{T}) where {T}
+    return sparse(-(ops.Dx * ops.Gx + ops.Dy * ops.Gy))
+end
+
+function build_real_amg_transfer_cache(A_real::SparseMatrixCSC{T,Int}, builder::PartialHelmholtzSinCosBuilder) where {T}
     # A_setup = builder.amg_setup_reg_eps > 0 ?
     #     A_real + spdiagm(0 => fill(T(builder.amg_setup_reg_eps), size(A_real, 1))) :
     #     A_real
@@ -356,6 +379,16 @@ function build_scalar_amg_hierarchy(A0::SparseMatrixCSC{T,Int}, builder::Partial
     )
 end
 
+function build_scalar_lu_solver(A0::SparseMatrixCSC{T,Int}, builder::PartialHelmholtzSinCosBuilder; pin_dof::Int = 1) where {T}
+    A = pin_sparse_dof(A0, pin_dof)
+    factor = robust_sparse_lu(
+        A;
+        reg_eps = builder.helmholtz_reg_eps,
+        max_reg_tries = builder.helmholtz_max_reg_tries,
+    )
+    return ScalarLUSolver{T, typeof(factor)}(A, factor)
+end
+
 function weighted_jacobi_scalar!(x::AbstractVector{T}, A::SparseMatrixCSC{T,Int}, b::AbstractVector{T}, Dinv::AbstractVector{T}, ω::T, niters::Int, tmp::AbstractVector{T}) where {T}
     for _ in 1:niters
         mul!(tmp, A, x)
@@ -429,6 +462,15 @@ function scalar_amg_apply!(x::AbstractVector{T}, hier::ScalarAMGHierarchy{T}, b:
     return x
 end
 
+function scalar_solver_apply!(x::AbstractVector{T}, hier::ScalarAMGHierarchy{T}, b::AbstractVector{T}) where {T}
+    return scalar_amg_apply!(x, hier, b)
+end
+
+function scalar_solver_apply!(x::AbstractVector{T}, solver::ScalarLUSolver{T}, b::AbstractVector{T}) where {T}
+    ldiv!(x, solver.factor, b)
+    return x
+end
+
 function build_shifted_block_matrix(A_real::SparseMatrixCSC{T,Int}, shift_real::T, shift_imag::T) where {T}
     n = size(A_real, 1)
     B = A_real + spdiagm(0 => fill(shift_real, n))
@@ -469,6 +511,16 @@ function build_shifted_amg_hierarchy(cache::AMGTransferCache{T}, shift_real::T, 
         T(builder.amg_jacobi_ω), builder.amg_pre_iters, builder.amg_post_iters,
         builder.amg_cycles_per_apply, workspaces
     )
+end
+
+function build_shifted_lu_solver(A_real::SparseMatrixCSC{T,Int}, shift_real::T, shift_imag::T, builder::PartialHelmholtzSinCosBuilder) where {T}
+    H = build_shifted_block_matrix(A_real, shift_real, shift_imag)
+    factor = robust_sparse_lu(
+        H;
+        reg_eps = builder.helmholtz_reg_eps,
+        max_reg_tries = builder.helmholtz_max_reg_tries,
+    )
+    return ShiftedLUSolver{T, typeof(factor)}(H, factor)
 end
 
 function weighted_jacobi!(x::AbstractVector{T}, A::SparseMatrixCSC{T,Int}, b::AbstractVector{T}, Dinv::AbstractVector{T}, ω::T, niters::Int, tmp::AbstractVector{T}) where {T}
@@ -543,6 +595,15 @@ function shifted_amg_apply!(x::AbstractVector{T}, hier::ShiftedAMGHierarchy{T}, 
     return x
 end
 
+function shifted_solver_apply!(x::AbstractVector{T}, hier::ShiftedAMGHierarchy{T}, b::AbstractVector{T}) where {T}
+    return shifted_amg_apply!(x, hier, b)
+end
+
+function shifted_solver_apply!(x::AbstractVector{T}, solver::ShiftedLUSolver{T}, b::AbstractVector{T}) where {T}
+    ldiv!(x, solver.factor, b)
+    return x
+end
+
 function normalize_shifted_rhs!(rhs_s::AbstractVector{T}, rhs_c::AbstractVector{T}, α::T, γ::T) where {T}
     den = α * α + γ * γ
     invden = inv(den)
@@ -569,7 +630,14 @@ function frozen_prec_drag(builder::PartialHelmholtzSinCosBuilder, p::Params2DHar
     return drag
 end
 
-function build_sincos_helmholtz_block(m::Int, p::Params2DHarm, ops::HelmholtzGridOps{T}, cache::AMGTransferCache{T}, builder::PartialHelmholtzSinCosBuilder) where {T}
+function build_sincos_helmholtz_block(
+    m::Int,
+    p::Params2DHarm,
+    ops::HelmholtzGridOps{T},
+    A_real::SparseMatrixCSC{T,Int},
+    cache::Union{Nothing,AMGTransferCache{T}},
+    builder::PartialHelmholtzSinCosBuilder,
+) where {T}
     ω = T(m - 1) * T(p.σ)
     ω > zero(T) || error("Helmholtz block should only be built for positive harmonic frequencies")
 
@@ -590,7 +658,10 @@ function build_sincos_helmholtz_block(m::Int, p::Params2DHarm, ops::HelmholtzGri
     shift_den = α * α + γ * γ
     k2 = ω * γ / shift_den
     β  = ω * α / shift_den
-    hierarchy = build_shifted_amg_hierarchy(cache, -k2, β, builder)
+    solver = validate_reduced_solver(builder.reduced_solver)
+    hierarchy = solver == :amg ?
+        build_shifted_amg_hierarchy(cache::AMGTransferCache{T}, -k2, β, builder) :
+        build_shifted_lu_solver(A_real, -k2, β, builder)
 
     return SinCosHelmholtzHarmonicBlock{T, typeof(hierarchy)}(m, α, γ, hierarchy, a, b, pcoef, qcoef)
 end
@@ -600,7 +671,10 @@ function build_mean_mode_amg_block(p::Params2DHarm, ops::HelmholtzGridOps{T}, bu
     coeffx = (ops.D0u .* ops.gDu) ./ drag
     coeffy = (ops.D0v .* ops.gDv) ./ drag
     Amean = sparse(-(ops.Dx * spdiagm(0 => coeffx) * ops.Gx + ops.Dy * spdiagm(0 => coeffy) * ops.Gy))
-    hierarchy = build_scalar_amg_hierarchy(Amean, builder; pin_dof = 1)
+    solver = validate_reduced_solver(builder.reduced_solver)
+    hierarchy = solver == :amg ?
+        build_scalar_amg_hierarchy(Amean, builder; pin_dof = 1) :
+        build_scalar_lu_solver(Amean, builder; pin_dof = 1)
     return MeanModeAMGBlock{T, typeof(hierarchy)}(drag, hierarchy, p.nface)
 end
 
@@ -735,7 +809,7 @@ function apply_mean_mode!(y, x, P::PartialHelmholtzSinCosPrec{T}, blk::MeanModeA
     rhs[1] = sc.fz_c[1]
 
     z = @view sc.z2[1:n]
-    scalar_amg_apply!(z, blk.hierarchy, rhs)
+    scalar_solver_apply!(z, blk.hierarchy, rhs)
 
     mul!(sc.gradx_c, P.ops.Gx, z)
     mul!(sc.grady_c, P.ops.Gy, z)
@@ -749,7 +823,7 @@ end
 
 function apply_helmholtz_mode!(y, x, P::PartialHelmholtzSinCosPrec{T}, blk::SinCosHelmholtzHarmonicBlock{T}, sc::PartialHelmholtzApplyScratch{T}) where {T}
     prepare_reduced_mode_rhs!(y, x, P, blk, sc)
-    shifted_amg_apply!(sc.z2, blk.hierarchy, sc.rhs2)
+    shifted_solver_apply!(sc.z2, blk.hierarchy, sc.rhs2)
     recover_reduced_mode_solution!(y, P, blk, sc)
     return nothing
 end
@@ -758,6 +832,7 @@ function build_partial_helmholtz_sincos_prec(builder::PartialHelmholtzSinCosBuil
     p = builder.p
     T = Float64
 
+    solver = validate_reduced_solver(builder.reduced_solver)
     builder.constant_D0_in_helmholtz || error("This preconditioner requires constant_D0_in_helmholtz = true.")
 
     eff_drag = frozen_prec_drag(builder, p, T)
@@ -767,16 +842,17 @@ function build_partial_helmholtz_sincos_prec(builder::PartialHelmholtzSinCosBuil
         use_constant_D0 = builder.constant_D0_in_helmholtz,
         D0_const = builder.constant_D0_value,
     )
-    transfer_cache = build_real_amg_transfer_cache(ops, builder)
+    A_real = build_real_helmholtz_matrix(ops)
+    transfer_cache = solver == :amg ? build_real_amg_transfer_cache(A_real, builder) : nothing
     mean_block = build_mean_mode_amg_block(p, ops, builder)
 
     if p.Kloc >= 2
-        first_helm = build_sincos_helmholtz_block(2, p, ops, transfer_cache, builder)
+        first_helm = build_sincos_helmholtz_block(2, p, ops, A_real, transfer_cache, builder)
         helm_blocks = Vector{Union{Nothing, typeof(first_helm)}}(undef, p.Kloc)
         helm_blocks[1] = nothing
         helm_blocks[2] = first_helm
         for m in 3:p.Kloc
-            helm_blocks[m] = build_sincos_helmholtz_block(m, p, ops, transfer_cache, builder)
+            helm_blocks[m] = build_sincos_helmholtz_block(m, p, ops, A_real, transfer_cache, builder)
         end
     else
         helm_blocks = Union{Nothing, Nothing}[nothing]
@@ -786,14 +862,16 @@ function build_partial_helmholtz_sincos_prec(builder::PartialHelmholtzSinCosBuil
 
     if builder.verbose
         baseline_drag = physical_prec_drag_baseline(builder, p, T)
-        println("Constructed preconditioner (mean-mode Poisson-AMG + oscillatory Helmholtz-AMG):")
+        label = reduced_solver_label(solver)
+        println("Constructed preconditioner (mean-mode Poisson-$label + oscillatory Helmholtz-$label):")
         println("  effective drag = $(eff_drag)")
         println("  physical baseline drag = $(baseline_drag) = C_prec * (3r|U|/π)")
         println("  C_prec = $(builder.C_prec)")
-        println("  mean harmonic 0 -> Poisson-AMG")
+        println("  reduced_solver = :$(solver)")
+        println("  mean harmonic 0 -> Poisson-$label")
         for m in 2:p.Kloc
             k = m - 1
-            println("  harmonic $k -> Helmholtz-AMG")
+            println("  harmonic $k -> Helmholtz-$label")
         end
     end
 

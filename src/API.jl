@@ -22,6 +22,7 @@ Base.@kwdef struct ModelConfig
 end
 
 Base.@kwdef struct PreconditionerOptions
+    reduced_solver::Symbol = :amg
     constant_D0_in_helmholtz::Bool = true
     constant_D0_value::Union{Nothing,Float64} = nothing
     C_prec::Float64 = 8.0
@@ -123,6 +124,7 @@ end
 function make_preconditioner_builder(p::Params2DHarm, opts::PreconditionerOptions)
     return PartialHelmholtzSinCosBuilder(
         p = p,
+        reduced_solver = opts.reduced_solver,
         constant_D0_in_helmholtz = opts.constant_D0_in_helmholtz,
         constant_D0_value = opts.constant_D0_value,
         C_prec = opts.C_prec,
