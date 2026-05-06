@@ -167,11 +167,14 @@ struct ShiftedAMGHierarchy{T,LF}
     Pbig_levels::Vector{SparseMatrixCSC{T,Int}}
     Rbig_levels::Vector{SparseMatrixCSC{T,Int}}
     Dinv_levels::Vector{Vector{T}}
+    gpw_levels::Vector{T}
     coarse_factor::LF
     jacobi_ω::T
     pre_iters::Int
     post_iters::Int
     cycles_per_apply::Int
+    gpw_smoothing_threshold::T
+    gpw_smoothing_iters::Int
     workspaces::Vector{ShiftedAMGWorkspace{T}}
 end
 
@@ -244,6 +247,8 @@ Base.@kwdef mutable struct PartialHelmholtzSinCosBuilder
     amg_pre_iters::Int = 2
     amg_post_iters::Int = 2
     amg_cycles_per_apply::Int = 1
+    shifted_amg_gpw_smoothing_threshold::Float64 = 30.0
+    shifted_amg_gpw_smoothing_iters::Int = 4
     helmholtz_reg_eps::Float64 = 1e-10
     helmholtz_max_reg_tries::Int = 6
     verbose::Bool = true
@@ -481,6 +486,25 @@ function build_shifted_block_matrix(A_real::SparseMatrixCSC{T,Int}, shift_real::
     return sparse(H)
 end
 
+function shifted_gpw_levels(H_levels::Vector{SparseMatrixCSC{T,Int}}, p::Params2DHarm, wavenumber::T) where {T}
+    gpw_levels = Vector{T}(undef, length(H_levels))
+    if wavenumber <= zero(T)
+        fill!(gpw_levels, T(Inf))
+        return gpw_levels
+    end
+
+    n0 = size(H_levels[1], 1) ÷ 2
+    h0 = max(T(p.Δx), T(p.Δy))
+    wavelength = T(2π) / wavenumber
+
+    @inbounds for l in eachindex(H_levels)
+        nl = size(H_levels[l], 1) ÷ 2
+        coarsening = sqrt(T(n0) / T(nl))
+        gpw_levels[l] = wavelength / (h0 * coarsening)
+    end
+    return gpw_levels
+end
+
 function build_shifted_amg_hierarchy(cache::AMGTransferCache{T}, shift_real::T, shift_imag::T, builder::PartialHelmholtzSinCosBuilder) where {T}
     H_levels = Vector{SparseMatrixCSC{T,Int}}(undef, length(cache.Pbig_levels) + 1)
     H_levels[1] = build_shifted_block_matrix(cache.A_real, shift_real, shift_imag)
@@ -505,11 +529,14 @@ function build_shifted_amg_hierarchy(cache::AMGTransferCache{T}, shift_real::T, 
         max_reg_tries = builder.helmholtz_max_reg_tries,
     )
     workspaces = [ShiftedAMGWorkspace(T, H_levels) for _ in 1:Threads.maxthreadid()]
+    wavenumber = sqrt(max(-shift_real, zero(T)))
+    gpw_levels = shifted_gpw_levels(H_levels, builder.p, wavenumber)
 
     return ShiftedAMGHierarchy{T, typeof(coarse_factor)}(
-        H_levels, cache.Pbig_levels, cache.Rbig_levels, Dinv_levels, coarse_factor,
+        H_levels, cache.Pbig_levels, cache.Rbig_levels, Dinv_levels, gpw_levels, coarse_factor,
         T(builder.amg_jacobi_ω), builder.amg_pre_iters, builder.amg_post_iters,
-        builder.amg_cycles_per_apply, workspaces
+        builder.amg_cycles_per_apply, T(builder.shifted_amg_gpw_smoothing_threshold),
+        builder.shifted_amg_gpw_smoothing_iters, workspaces
     )
 end
 
@@ -563,6 +590,15 @@ function shifted_vcycle!(x::AbstractVector{T}, hier::ShiftedAMGHierarchy{T}, lvl
 
     H = hier.H_levels[lvl]
     tmp = ws.residuals[lvl]
+
+    if hier.gpw_levels[lvl] > hier.gpw_smoothing_threshold
+        weighted_jacobi!(
+            x, H, b, hier.Dinv_levels[lvl], hier.jacobi_ω,
+            hier.gpw_smoothing_iters, tmp
+        )
+        return x
+    end
+
     weighted_jacobi!(x, H, b, hier.Dinv_levels[lvl], hier.jacobi_ω, hier.pre_iters, tmp)
 
     mul!(tmp, H, x)

@@ -35,6 +35,8 @@ Base.@kwdef struct PreconditionerOptions
     amg_pre_iters::Int = 2
     amg_post_iters::Int = 2
     amg_cycles_per_apply::Int = 1
+    shifted_amg_gpw_smoothing_threshold::Float64 = 30.0
+    shifted_amg_gpw_smoothing_iters::Int = 4
     helmholtz_reg_eps::Float64 = 1e-10
     helmholtz_max_reg_tries::Int = 1
     verbose::Bool = true
@@ -137,6 +139,8 @@ function make_preconditioner_builder(p::Params2DHarm, opts::PreconditionerOption
         amg_pre_iters = opts.amg_pre_iters,
         amg_post_iters = opts.amg_post_iters,
         amg_cycles_per_apply = opts.amg_cycles_per_apply,
+        shifted_amg_gpw_smoothing_threshold = opts.shifted_amg_gpw_smoothing_threshold,
+        shifted_amg_gpw_smoothing_iters = opts.shifted_amg_gpw_smoothing_iters,
         helmholtz_reg_eps = opts.helmholtz_reg_eps,
         helmholtz_max_reg_tries = opts.helmholtz_max_reg_tries,
         verbose = opts.verbose,

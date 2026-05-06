@@ -31,6 +31,8 @@ prec = PreconditionerOptions(
     amg_cycles_per_apply = 1,
     helmholtz_reg_eps = 1e-10,
     helmholtz_max_reg_tries = 1,
+    shifted_amg_gpw_smoothing_threshold = 30000000.0,
+    shifted_amg_gpw_smoothing_iters = 6,
     verbose = true,
 )
 
