@@ -8,3 +8,6 @@ tests/helmholtz_solver_comparison_20260505_194306.csv
 tests/helmholtz_solver_comparison_20260505_194436_scaling.png
 tests/helmholtz_solver_comparison_20260505_194436.csv
 tests/helmholtz_solver_comparison.csv
+gmres_across_newton.png
+.gitignore
+ymid_xt_30periods_harmonic_major.png

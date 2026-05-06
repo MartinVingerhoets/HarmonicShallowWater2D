@@ -2,6 +2,7 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
 
 using HarmonicShallowWater2D
+using Dates
 
 cfg = ModelConfig(
     Nx = 90,
@@ -31,10 +32,11 @@ prec = PreconditionerOptions(
     amg_cycles_per_apply = 1,
     helmholtz_reg_eps = 1e-10,
     helmholtz_max_reg_tries = 1,
-    shifted_amg_gpw_smoothing_threshold = 30000000.0,
-    shifted_amg_gpw_smoothing_iters = 6,
+    shifted_amg_gpw_smoothing_threshold = 300.0,
+    shifted_amg_gpw_smoothing_iters = 20,
     verbose = true,
 )
+
 
 solver = SolverOptions(
     abstol = 1e-10,
@@ -44,7 +46,9 @@ solver = SolverOptions(
     gmres_verbose = 1,
 )
 
+t0 = now()
 run = solve_problem(cfg; solver_options = solver, preconditioner_options = prec)
-
+t1 = now()
+println("Total solve time: ", t1 - t0)
 fig_gmres, gmres_counts = plot_gmres_across_newton(run.gmres_trace; savepath = "gmres_across_newton.png")
 fig_xt, _ = plot_midrow_xt(run.solution, run.params; nperiods = 30, nt_per_period = 64)

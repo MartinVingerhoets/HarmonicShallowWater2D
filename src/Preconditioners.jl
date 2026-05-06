@@ -591,14 +591,6 @@ function shifted_vcycle!(x::AbstractVector{T}, hier::ShiftedAMGHierarchy{T}, lvl
     H = hier.H_levels[lvl]
     tmp = ws.residuals[lvl]
 
-    if hier.gpw_levels[lvl] > hier.gpw_smoothing_threshold
-        weighted_jacobi!(
-            x, H, b, hier.Dinv_levels[lvl], hier.jacobi_ω,
-            hier.gpw_smoothing_iters, tmp
-        )
-        return x
-    end
-
     weighted_jacobi!(x, H, b, hier.Dinv_levels[lvl], hier.jacobi_ω, hier.pre_iters, tmp)
 
     mul!(tmp, H, x)
@@ -625,6 +617,16 @@ end
 function shifted_amg_apply!(x::AbstractVector{T}, hier::ShiftedAMGHierarchy{T}, b::AbstractVector{T}) where {T}
     fill!(x, zero(T))
     ws = hier.workspaces[Threads.threadid()]
+    if hier.gpw_levels[1] > hier.gpw_smoothing_threshold
+        H = hier.H_levels[1]
+        tmp = ws.residuals[1]
+        weighted_jacobi!(
+            x, H, b, hier.Dinv_levels[1], hier.jacobi_ω,
+            hier.gpw_smoothing_iters * hier.cycles_per_apply, tmp
+        )
+        return x
+    end
+
     for _ in 1:hier.cycles_per_apply
         shifted_vcycle!(x, hier, 1, b, ws)
     end
@@ -639,6 +641,37 @@ function shifted_solver_apply!(x::AbstractVector{T}, solver::ShiftedLUSolver{T},
     ldiv!(x, solver.factor, b)
     return x
 end
+
+function print_shifted_gpw_smoothing_summary(hier::ShiftedAMGHierarchy, indent::AbstractString = "    ")
+    gpw = hier.gpw_levels[1]
+    if gpw <= hier.gpw_smoothing_threshold
+        println(
+            indent,
+            "top-level gpw-only smoothing: no (level 1 gpw=",
+            round(gpw; digits = 2),
+            ", threshold=",
+            hier.gpw_smoothing_threshold,
+            ")",
+        )
+        return nothing
+    end
+
+    println(
+        indent,
+        "top-level gpw-only smoothing: yes (level 1 size=",
+        size(hier.H_levels[1], 1),
+        ", gpw=",
+        round(gpw; digits = 2),
+        ", threshold=",
+        hier.gpw_smoothing_threshold,
+        ") with ",
+        hier.gpw_smoothing_iters,
+        " Jacobi iterations per apply cycle",
+    )
+    return nothing
+end
+
+print_shifted_gpw_smoothing_summary(::Any, indent::AbstractString = "    ") = nothing
 
 function normalize_shifted_rhs!(rhs_s::AbstractVector{T}, rhs_c::AbstractVector{T}, α::T, γ::T) where {T}
     den = α * α + γ * γ
@@ -908,6 +941,7 @@ function build_partial_helmholtz_sincos_prec(builder::PartialHelmholtzSinCosBuil
         for m in 2:p.Kloc
             k = m - 1
             println("  harmonic $k -> Helmholtz-$label")
+            print_shifted_gpw_smoothing_summary(helm_blocks[m].hierarchy)
         end
     end
 
